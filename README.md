@@ -216,6 +216,9 @@ Restart Claude Code, then confirm it loaded:
 claude plugin list
 ```
 
+Then run `/haiku-shunt:init` once to check `jq` is installed and the hook
+scripts are executable — both silently break the hooks if missing.
+
 **From a local clone,** if you want to edit the hooks and thresholds:
 
 ```bash
@@ -309,6 +312,9 @@ haiku-shunt/
 │   └── code-author.md
 ├── hooks/
 │   └── hooks.json
+├── skills/
+│   └── init/
+│       └── SKILL.md
 ├── scripts/
 │   ├── check-file-size.sh
 │   ├── check-bash-read.sh
