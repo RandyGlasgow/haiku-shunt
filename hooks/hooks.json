@@ -12,12 +12,27 @@
         ]
       },
       {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-search-density.sh",
+            "description": "Off unless HAIKU_SHUNT_DENSE_SEARCH names dense-search capabilities. Blocks uncapped content-mode searches; redirects to the structural/locate-only alternatives that flag enables."
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-bash-read.sh",
             "description": "Blocks unpiped cat/head/tail/less/more dumps of large files; redirects to the bulk-reader subagent."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-search-density.sh",
+            "description": "Off unless HAIKU_SHUNT_DENSE_SEARCH names dense-search capabilities. Blocks uncapped recursive grep/rg/ag/ack; redirects to the structural/locate-only alternatives that flag enables."
           }
         ]
       },
