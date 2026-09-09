@@ -49,13 +49,43 @@ external scripts and a Portal CLI call.
 
 ## Install
 
-```bash
-# From this repo, for local testing:
-claude plugin install --local /path/to/haiku-shunt
+Copy-paste one of these. They all work as-is — no placeholders to fill in.
 
-# Or, once pushed to a marketplace:
-claude plugin marketplace add <your-username>/haiku-shunt
-claude plugin install haiku-shunt@<marketplace-name>
+**From GitHub (recommended).** This repo is its own marketplace:
+
+```bash
+claude plugin marketplace add RandyGlasgow/haiku-shunt
+claude plugin install haiku-shunt@haiku-shunt
+```
+
+Restart Claude Code, then confirm it loaded:
+
+```bash
+claude plugin list
+```
+
+**From a local clone,** if you want to edit the hooks and thresholds:
+
+```bash
+git clone https://github.com/RandyGlasgow/haiku-shunt.git
+claude plugin marketplace add ./haiku-shunt
+claude plugin install haiku-shunt@haiku-shunt
+```
+
+**For hacking on it,** drop it in your skills directory instead — it
+auto-loads on the next session as `haiku-shunt@skills-dir`, and your edits
+take effect on restart with no reinstall step:
+
+```bash
+git clone https://github.com/RandyGlasgow/haiku-shunt.git ~/.claude/skills/haiku-shunt
+```
+
+### Update / uninstall
+
+```bash
+claude plugin update haiku-shunt@haiku-shunt        # pull the latest version
+claude plugin uninstall haiku-shunt@haiku-shunt     # remove the plugin
+claude plugin marketplace remove haiku-shunt        # and forget the marketplace
 ```
 
 ## Configuration
@@ -69,10 +99,14 @@ Set these in `.claude/settings.json` (project) or `~/.claude/settings.json`
 | `HAIKU_SHUNT_BOILERPLATE_ENABLED` | `true` | Set to `false` to disable the boilerplate-write hook entirely. |
 | `HAIKU_SHUNT_BOILERPLATE_PATTERN` | `(_test\.|_spec\.|\.test\.|\.spec\.|/tests?/|/__tests__/)` | Regex used to decide whether a new file looks like boilerplate. Tune to your repo's conventions. |
 
+A complete `.claude/settings.json` you can paste and trim:
+
 ```json
 {
   "env": {
-    "HAIKU_SHUNT_MIN_LINES": "500"
+    "HAIKU_SHUNT_MIN_LINES": "500",
+    "HAIKU_SHUNT_BOILERPLATE_ENABLED": "true",
+    "HAIKU_SHUNT_BOILERPLATE_PATTERN": "(_test\\.|_spec\\.|\\.test\\.|\\.spec\\.|/tests?/|/__tests__/)"
   }
 }
 ```
@@ -101,7 +135,8 @@ Same limits Spotify called out for the original, and for the same reasons:
 ```
 haiku-shunt/
 ├── .claude-plugin/
-│   └── plugin.json
+│   ├── plugin.json
+│   └── marketplace.json
 ├── agents/
 │   ├── bulk-reader.md
 │   └── code-writer.md
