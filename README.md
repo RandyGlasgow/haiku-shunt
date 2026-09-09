@@ -15,8 +15,9 @@ as the worker models.
 
 ## How it works
 
-**Layer 1 — Hooks (the enforcement).** Three `PreToolUse` hooks fire before
-Read, Bash, and Write calls:
+**Layer 1 — Hooks (the enforcement).** Four `PreToolUse` hooks fire before
+Read, Grep, Bash, and Write calls. Three are on by default; the search hook is
+behind an opt-in flag.
 
 - `check-file-size.sh` — blocks a `Read` over `HAIKU_SHUNT_MIN_LINES` (350
   lines by default) unless it's already a targeted read (`offset`/`limit`
@@ -30,10 +31,16 @@ Read, Bash, and Write calls:
   through. This one's a filename-pattern heuristic rather than a hard
   measurement, so it's the one most worth tuning — see Choosing a tier and
   Configuration below.
+- `check-search-density.sh` — **off by default.** When
+  `HAIKU_SHUNT_DENSE_SEARCH` names one or more dense-search capabilities, it
+  blocks a search that would return every matching *line* across a tree and
+  redirects to the dense alternatives that flag enabled. See Token-dense
+  search below.
 
-All three exit `2` on a block, which sends the message on stderr back to
-Claude as tool feedback. Claude sees the reason and (in practice) retries
-through the suggested subagent instead.
+All four exit `2` on a block, which sends the message on stderr back to
+Claude as tool feedback. Claude sees the reason and (in practice) retries the
+way the message suggests — through a subagent for reads and writes, through a
+denser query for searches.
 
 **Layer 2 — Subagents (the workers).** Three custom subagents, each pinned
 to the cheapest model that can actually do its job, so the expensive model
@@ -104,6 +111,94 @@ whether a write requires reading other code. Two things keep that honest:
   names the other worker as an option. Claude picks the subagent on retry, so
   a path that lies about its contents can still be routed correctly.
 
+## Token-dense search
+
+A recursive `grep`/`rg` that prints matching lines is one of the fattest things
+a session can do: the answer to "where is `handleAuth` defined" costs a few
+hundred lines of surrounding code, most of which is comments, imports, and
+call sites you didn't want. The dense version of the same question is two
+steps — locate, then read — and the locate step returns paths or symbols
+instead of text.
+
+Set the flag to the tools your repo actually has:
+
+```json
+{ "env": { "HAIKU_SHUNT_DENSE_SEARCH": "ast,rg,fzf" } }
+```
+
+That turns the hook on *and* builds its redirect menu. A blocked search comes
+back with only the alternatives you enabled, densest first:
+
+```
+Blocked: 'rg handleAuth src/' prints every matching line across the tree.
+
+Routing rule: locate first, read second. Get the shape of the answer
+in symbols, paths or counts, then read only the files that matter.
+
+Dense alternatives enabled for this repo:
+  ast-grep -p '<pattern>' <path>       structural — matches syntax, not text
+  rg -l '<pattern>' <path>             which files match
+  rg -c '<pattern>' <path>             how many, per file
+  fzf -f '<query>'                     narrow a path list, non-interactive
+```
+
+### Tokens
+
+| Token | Suggests | Kind |
+|---|---|---|
+| `ast`, `ast-grep` | `ast-grep -p '<pattern>'` | structural |
+| `sg` | `sg -p '<pattern>'` | structural |
+| `semgrep` | `semgrep -e '<pattern>'` | structural |
+| `comby` | `comby '<match>' '' <path>` | structural |
+| `tree-sitter`, `ts` | `tree-sitter query` | structural |
+| `ctags` | `ctags -x <path>` | symbol index |
+| `git`, `git-grep` | `git grep -l` | locate, index-aware |
+| `rg`, `ripgrep` | `rg -l` / `rg -c` | locate |
+| `fzf` | `fzf -f '<query>'` | fuzzy path narrowing |
+| `all` | everything above | — |
+
+Unknown tokens are ignored and named in the block message, so a typo can't
+silently drop a suggestion. A flag made up *entirely* of unknown tokens
+disables the hook rather than enforcing against an empty menu.
+
+### Why a list and not a boolean
+
+The hook never probes the filesystem for a binary. If `ast-grep` isn't in the
+flag, the hook won't suggest it — even on a machine that has it installed.
+That's deliberate: the same repo config then behaves identically on every
+machine and in CI, and a suggestion is never made for a tool the session
+would fail to run. It also keeps the off-path cost at a single string test,
+before any JSON parsing.
+
+### What it blocks
+
+Only the uncapped, tree-wide, content-returning shape. Everything already
+narrowed passes through:
+
+| Passes through | Blocked |
+|---|---|
+| `Grep` with default or `files_with_matches`/`count` output mode | `Grep` with `output_mode: "content"` and no `head_limit` |
+| `Grep` with `head_limit` ≤ `HAIKU_SHUNT_SEARCH_MAX_MATCHES` | …and `-A`/`-B`/`-C` context makes it worse, not better |
+| `Grep` whose `path` is a single file | |
+| `rg -l`, `rg -c`, `grep -rl`, `--files-with-matches`, `-o` | `rg <pattern> <dir>`, `grep -rn <pattern> <dir>` |
+| `-m`/`--max-count` at or under the cap | `-m 9999` |
+| anything with a pipe (`rg foo src/ \| head`) | |
+| a non-recursive `grep` over a named file | |
+
+The pipe and single-file carve-outs match `check-bash-read.sh` — a pipe means
+the output is already being narrowed, and a named file means the search is
+targeted.
+
+### The honest limitation
+
+The read hooks measure what they block: a file's line count is a fact known
+before the read. This hook can't — a search's cost isn't knowable until it
+runs, and a tree-wide `rg` that happens to return two lines is perfectly
+cheap. So it gates on the *shape* of the query rather than its size, which
+means it will sometimes block a search that would have been fine. The
+carve-outs above are deliberately generous for that reason, and every block
+message ends with the cap that makes the original query legal.
+
 ## Install
 
 Copy-paste one of these. They all work as-is — no placeholders to fill in.
@@ -157,6 +252,9 @@ Set these in `.claude/settings.json` (project) or `~/.claude/settings.json`
 | `HAIKU_SHUNT_TEMPLATE_PATTERN` | see below | Paths matching this route to `code-writer` (Haiku). |
 | `HAIKU_SHUNT_DERIVED_PATTERN` | see below | Paths matching this — and not the template pattern — route to `code-author` (Sonnet). |
 | `HAIKU_SHUNT_TEMPLATE_MAX_LINES` | `120` | A template-pattern match with more content than this is re-routed to Sonnet instead. |
+| `HAIKU_SHUNT_DENSE_SEARCH` | unset (off) | Comma-separated dense-search capabilities. Unset, empty, `false` or `off` disables the search hook entirely. See Token-dense search. |
+| `HAIKU_SHUNT_SEARCH_MAX_MATCHES` | `40` | A search capped at or under this many matches counts as targeted and passes through. |
+| `HAIKU_SHUNT_AST_TOOL` | `ast-grep` | Binary the `ast` token suggests, for a repo that wraps it. Does *not* enable the hook on its own. |
 
 The template pattern is checked first, so a path matching both (e.g.
 `tests/fixtures/users.json`) is treated as templated.
@@ -170,7 +268,9 @@ A complete `.claude/settings.json` you can paste and trim:
     "HAIKU_SHUNT_WRITE_ENABLED": "true",
     "HAIKU_SHUNT_TEMPLATE_MAX_LINES": "120",
     "HAIKU_SHUNT_TEMPLATE_PATTERN": "((^|/)index\\.(ts|tsx|js|jsx|mjs|cjs)$|\\.d\\.ts$|(^|/)fixtures?/|(^|/)__fixtures__/|(^|/)__mocks__/|\\.(config|conf)\\.(ts|js|json|mjs|cjs|ya?ml)$)",
-    "HAIKU_SHUNT_DERIVED_PATTERN": "(_test\\.|_spec\\.|\\.test\\.|\\.spec\\.|(^|/)tests?/|(^|/)__tests__/|\\.mdx?$|(^|/)docs?/|(^|/)(README|CHANGELOG|CONTRIBUTING))"
+    "HAIKU_SHUNT_DERIVED_PATTERN": "(_test\\.|_spec\\.|\\.test\\.|\\.spec\\.|(^|/)tests?/|(^|/)__tests__/|\\.mdx?$|(^|/)docs?/|(^|/)(README|CHANGELOG|CONTRIBUTING))",
+    "HAIKU_SHUNT_DENSE_SEARCH": "ast,rg,fzf",
+    "HAIKU_SHUNT_SEARCH_MAX_MATCHES": "40"
   }
 }
 ```
@@ -212,6 +312,7 @@ haiku-shunt/
 ├── scripts/
 │   ├── check-file-size.sh
 │   ├── check-bash-read.sh
+│   ├── check-search-density.sh
 │   └── check-write-tier.sh
 └── README.md
 ```
