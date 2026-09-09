@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-file-size.sh",
+            "description": "Blocks whole-file reads over the line threshold; redirects to the bulk-reader subagent."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-bash-read.sh",
+            "description": "Blocks unpiped cat/head/tail/less/more dumps of large files; redirects to the bulk-reader subagent."
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-boilerplate-write.sh",
+            "description": "Blocks fresh writes to files that look like test/boilerplate scaffolding; redirects to the code-writer subagent."
+          }
+        ]
+      }
+    ]
+  }
+}
