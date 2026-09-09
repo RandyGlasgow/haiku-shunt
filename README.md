@@ -1,15 +1,17 @@
 # haiku-shunt
 
 A Claude Code plugin that deterministically routes bulk file reads and fresh
-boilerplate writes to Haiku subagents, so large/mechanical I/O never eats
-your main session's context or runs on your expensive model.
+file writes to cheaper subagents, so large/mechanical work never eats your
+main session's context or runs on your expensive model. Reads go to Haiku;
+writes are split between a Haiku worker and a Sonnet worker depending on
+whether the file is templated or has to be derived from other code.
 
 This is a Claude-only port of the pattern behind [Spotify's Shunt
 plugin](https://engineering.atspotify.com/2026/9/portal-by-spotify-cut-my-claude-code-token-usage-by-90),
 which routes the same kind of work to Gemini via their internal Portal
 platform. This version drops that external dependency: everything here runs
-on Claude Code's native `hooks` + `agents` primitives, with Haiku as the
-worker model.
+on Claude Code's native `hooks` + `agents` primitives, with Haiku and Sonnet
+as the worker models.
 
 ## How it works
 
@@ -22,30 +24,85 @@ Read, Bash, and Write calls:
 - `check-bash-read.sh` — same idea for `cat`/`head`/`tail`/`less`/`more`
   dumps of large files run through Bash, so files can't dodge the Read hook
   by going through the shell. Piped commands pass through untouched.
-- `check-boilerplate-write.sh` — blocks a **fresh** `Write` to a file whose
-  path looks like test/boilerplate scaffolding, and redirects to the
-  `code-writer` subagent. This one's a filename-pattern heuristic rather
-  than a hard measurement, so it's the one most worth tuning — see
+- `check-write-tier.sh` — blocks a **fresh** `Write` and routes it to a
+  worker by tier: templated scaffolding to `code-writer` (Haiku), derived
+  content to `code-author` (Sonnet). Anything matching neither passes
+  through. This one's a filename-pattern heuristic rather than a hard
+  measurement, so it's the one most worth tuning — see Choosing a tier and
   Configuration below.
 
 All three exit `2` on a block, which sends the message on stderr back to
 Claude as tool feedback. Claude sees the reason and (in practice) retries
 through the suggested subagent instead.
 
-**Layer 2 — Subagents (the workers).** Two custom subagents, both pinned to
-`model: haiku` so the expensive model never touches this work:
+**Layer 2 — Subagents (the workers).** Three custom subagents, each pinned
+to the cheapest model that can actually do its job, so the expensive model
+never touches this work:
 
-- `bulk-reader` — read-only (`Read, Grep, Glob`), answers a question about
-  one or more files in terse structured bullets. No prose, no line-number
-  guessing.
-- `code-writer` — `Read, Write`, generates code that matches a required
-  reference file's conventions exactly. Refuses to guess at patterns if no
-  reference file is given.
+- `bulk-reader` (`model: haiku`) — read-only (`Read, Grep, Glob`), answers a
+  question about one or more files in terse structured bullets. No prose, no
+  line-number guessing.
+- `code-writer` (`model: haiku`) — `Read, Write`, generates templated
+  scaffolding matching a required reference file's conventions exactly.
+  Refuses to guess at patterns if no reference file is given, and bounces the
+  task to `code-author` if writing it well would need real understanding.
+- `code-author` (`model: sonnet`) — `Read, Write, Grep, Glob`, writes files
+  whose content must be derived from other code. Reads the implementation
+  before writing, makes bounded decisions itself, and escalates unbounded
+  ones back to the caller instead of guessing.
 
 Because these are ordinary Claude Code subagents, they run in their own
 context window — the caller only sees the final answer, not the intermediate
 reads. That's the actual mechanism Spotify's version was reconstructing with
 external scripts and a Portal CLI call.
+
+## Choosing a tier
+
+The axis that decides which worker gets a job is **how much of the output is
+determined by the input**:
+
+| Tier | Output is… | Examples | Model |
+|---|---|---|---|
+| Templated | fully determined by a reference file — zero decisions | barrel/`index` files, `.d.ts` mirroring a schema, config stubs, fixtures, mocks | `code-writer` (Haiku 4.5) |
+| Derived | bounded decisions, but only after reading the source | tests that cover real branches, docs written from code, a module against a fixed interface, a mechanical migration | `code-author` (Sonnet 5) |
+| Neither | unbounded decisions, architectural seams, "is this a bug" | everything else | stays in your main session |
+
+The earlier version of this plugin sent *all* test files to Haiku. That was
+the wrong cut: a test that earns its keep requires reading the implementation
+and deciding what to cover, which is derivation, not mimicry. Haiku only
+genuinely wins where a template already determines the answer.
+
+### Why this is where the money is
+
+| | Context | Input $/MTok | Output $/MTok | Thinking control |
+|---|---|---|---|---|
+| Haiku 4.5 | 200K | $1 | $5 | `budget_tokens` only; no effort levels |
+| Sonnet 5 | 1M | $2 | $10 | adaptive + `low`→`max` effort |
+| Opus 5 | 1M | $5 | $25 | adaptive + effort |
+
+Two consequences worth knowing:
+
+- **Writing is output-token-heavy, and output is where the price spread is.**
+  The read hooks save input tokens ($5 → $1), but their real value is context
+  preservation. The write hook hits the $25/MTok side of the bill, so it's
+  where the actual dollar savings live.
+- **Sonnet 5 is only 2× Haiku's price for 5× the context**, plus adaptive
+  thinking and effort control that Haiku 4.5 doesn't have at all. The gap
+  between the two tiers is much smaller than the gap in what they can do, so
+  reaching for Sonnet on derived content is cheap insurance against a
+  confident, well-formatted test file that asserts nothing.
+
+### Where the heuristic breaks
+
+The hook only sees a file path and the content blob — it cannot actually tell
+whether a write requires reading other code. Two things keep that honest:
+
+- Content size is a second signal. A file matching the *template* pattern but
+  longer than `HAIKU_SHUNT_TEMPLATE_MAX_LINES` is re-routed to Sonnet, on the
+  theory that a 300-line "template" isn't one.
+- The block message states the **routing rule**, not just an agent name, and
+  names the other worker as an option. Claude picks the subagent on retry, so
+  a path that lies about its contents can still be routed correctly.
 
 ## Install
 
@@ -96,8 +153,13 @@ Set these in `.claude/settings.json` (project) or `~/.claude/settings.json`
 | Variable | Default | Purpose |
 |---|---|---|
 | `HAIKU_SHUNT_MIN_LINES` | `350` | Line threshold for both the Read and Bash-read hooks. |
-| `HAIKU_SHUNT_BOILERPLATE_ENABLED` | `true` | Set to `false` to disable the boilerplate-write hook entirely. |
-| `HAIKU_SHUNT_BOILERPLATE_PATTERN` | `(_test\.|_spec\.|\.test\.|\.spec\.|/tests?/|/__tests__/)` | Regex used to decide whether a new file looks like boilerplate. Tune to your repo's conventions. |
+| `HAIKU_SHUNT_WRITE_ENABLED` | `true` | Set to `false` to disable the write-tier hook entirely. (`HAIKU_SHUNT_BOILERPLATE_ENABLED` is the pre-0.2 name and is still honored.) |
+| `HAIKU_SHUNT_TEMPLATE_PATTERN` | see below | Paths matching this route to `code-writer` (Haiku). |
+| `HAIKU_SHUNT_DERIVED_PATTERN` | see below | Paths matching this — and not the template pattern — route to `code-author` (Sonnet). |
+| `HAIKU_SHUNT_TEMPLATE_MAX_LINES` | `120` | A template-pattern match with more content than this is re-routed to Sonnet instead. |
+
+The template pattern is checked first, so a path matching both (e.g.
+`tests/fixtures/users.json`) is treated as templated.
 
 A complete `.claude/settings.json` you can paste and trim:
 
@@ -105,8 +167,10 @@ A complete `.claude/settings.json` you can paste and trim:
 {
   "env": {
     "HAIKU_SHUNT_MIN_LINES": "500",
-    "HAIKU_SHUNT_BOILERPLATE_ENABLED": "true",
-    "HAIKU_SHUNT_BOILERPLATE_PATTERN": "(_test\\.|_spec\\.|\\.test\\.|\\.spec\\.|/tests?/|/__tests__/)"
+    "HAIKU_SHUNT_WRITE_ENABLED": "true",
+    "HAIKU_SHUNT_TEMPLATE_MAX_LINES": "120",
+    "HAIKU_SHUNT_TEMPLATE_PATTERN": "((^|/)index\\.(ts|tsx|js|jsx|mjs|cjs)$|\\.d\\.ts$|(^|/)fixtures?/|(^|/)__fixtures__/|(^|/)__mocks__/|\\.(config|conf)\\.(ts|js|json|mjs|cjs|ya?ml)$)",
+    "HAIKU_SHUNT_DERIVED_PATTERN": "(_test\\.|_spec\\.|\\.test\\.|\\.spec\\.|(^|/)tests?/|(^|/)__tests__/|\\.mdx?$|(^|/)docs?/|(^|/)(README|CHANGELOG|CONTRIBUTING))"
   }
 }
 ```
@@ -119,9 +183,11 @@ Same limits Spotify called out for the original, and for the same reasons:
   line numbers, so Claude still reads a targeted section directly before
   editing. The hooks already allow `offset`/`limit` reads through for this.
 - **No delegated reasoning.** Haiku is fine for "what does this do" and
-  "generate this boilerplate." It's not a substitute for Claude on
-  debugging, architectural decisions, or safety-critical code — don't route
-  those here.
+  "fill in this template." Sonnet extends that to work with bounded decisions
+  and a cheap correctness check. Neither is a substitute for your main model
+  on debugging, architectural decisions, or safety-critical code — don't route
+  those here. `code-author` is instructed to escalate rather than guess when a
+  task turns out to need one of them.
 - **Some latency.** Every delegation is a real subagent spawn. Below the
   line threshold, that overhead costs more than it saves, which is why the
   threshold exists at all rather than delegating everything.
@@ -139,12 +205,13 @@ haiku-shunt/
 │   └── marketplace.json
 ├── agents/
 │   ├── bulk-reader.md
-│   └── code-writer.md
+│   ├── code-writer.md
+│   └── code-author.md
 ├── hooks/
 │   └── hooks.json
 ├── scripts/
 │   ├── check-file-size.sh
 │   ├── check-bash-read.sh
-│   └── check-boilerplate-write.sh
+│   └── check-write-tier.sh
 └── README.md
 ```
