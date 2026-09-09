@@ -1,7 +1,7 @@
 {
   "name": "haiku-shunt",
-  "version": "0.1.0",
-  "description": "Deterministically routes bulk file reads and fresh boilerplate writes to Haiku subagents via PreToolUse hooks, keeping large/mechanical I/O out of the main session's context window. A Claude-only port of Spotify's Shunt/Portal pattern — no external platform or non-Anthropic model required.",
+  "version": "0.2.0",
+  "description": "Deterministically routes bulk file reads and fresh file writes to cheaper subagents via PreToolUse hooks, keeping large/mechanical work out of the main session's context window. Writes are tiered: templated scaffolding goes to a Haiku worker, content that must be derived from reading other code goes to a Sonnet worker. A Claude-only port of Spotify's Shunt/Portal pattern \u2014 no external platform or non-Anthropic model required.",
   "author": {
     "name": "Randy"
   },

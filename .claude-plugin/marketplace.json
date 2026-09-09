@@ -1,6 +1,6 @@
 {
   "name": "haiku-shunt",
-  "description": "Marketplace for haiku-shunt, a Claude Code plugin that routes bulk reads and boilerplate writes to Haiku subagents.",
+  "description": "Marketplace for haiku-shunt, a Claude Code plugin that routes bulk reads to Haiku and tiers file writes between Haiku and Sonnet workers.",
   "owner": {
     "name": "Randy",
     "url": "https://github.com/RandyGlasgow"
@@ -9,7 +9,7 @@
     {
       "name": "haiku-shunt",
       "source": "./",
-      "description": "Deterministically routes bulk file reads and fresh boilerplate writes to Haiku subagents via PreToolUse hooks, keeping large/mechanical I/O out of the main session's context window."
+      "description": "Deterministically routes bulk file reads and fresh file writes to cheaper subagents via PreToolUse hooks, keeping large/mechanical work out of the main session's context window. Writes are tiered: templated scaffolding goes to a Haiku worker, content that must be derived from reading other code goes to a Sonnet worker. A Claude-only port of Spotify's Shunt/Portal pattern \u2014 no external platform or non-Anthropic model required."
     }
   ]
 }

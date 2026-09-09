@@ -26,8 +26,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-boilerplate-write.sh",
-            "description": "Blocks fresh writes to files that look like test/boilerplate scaffolding; redirects to the code-writer subagent."
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-write-tier.sh",
+            "description": "Blocks fresh writes and routes them by tier: templated scaffolding to the haiku code-writer subagent, derived content (tests, docs, modules against a spec) to the sonnet code-author subagent."
           }
         ]
       }
